@@ -24,6 +24,7 @@ from openquake.baselib.python3compat import zip, encode
 from openquake.hazardlib.stats import set_rlzs_stats
 from openquake.risklib.scientific import losses_by_period
 from openquake.risklib.riskinput import get_assets_by_taxo, cache_epsilons
+from openquake.commonlib import logictree
 from openquake.calculators import base, event_based, getters
 from openquake.calculators.export.loss_curves import get_loss_builder
 
@@ -162,8 +163,6 @@ class EbriskCalculator(event_based.EventBasedCalculator):
         self.param['ses_ratio'] = self.oqparam.ses_ratio
         self.param['aggregate_by'] = self.oqparam.aggregate_by
         self.param['asset_loss_table'] = self.oqparam.asset_loss_table
-        # initialize the riskmodel
-        self.riskmodel.tmap = self.assetcol.tagcol.taxonomy
         self.param['riskmodel'] = self.riskmodel
         self.L = L = len(self.riskmodel.loss_types)
         A = len(self.assetcol)
