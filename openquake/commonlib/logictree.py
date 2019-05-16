@@ -1637,8 +1637,9 @@ def taxonomy_mapping(filename, taxonomies):
     dic = {}  # taxonomy index -> risk taxonomy
     arr = hdf5.read_csv(filename, {None: hdf5.vstr, 'weight': float}).array
     tagname = arr.dtype.names[0]
+    taxo2idx = {taxo: idx for idx, taxo in enumerate(taxonomies)}
     for recs in group_array(arr, tagname, 'expotaxonomy').values():
         [rec] = recs
         assert abs(recs['weight'].sum() - 1.) < pmf.PRECISION
-        dic[taxonomies[rec['expotaxonomy']]] = rec['risktaxonomy']
+        dic[taxo2idx[rec['expotaxonomy']]] = rec['risktaxonomy']
     return dic
