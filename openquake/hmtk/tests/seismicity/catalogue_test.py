@@ -420,3 +420,63 @@ class TestCatalogueConcatenate(unittest.TestCase):
         self.cat2.data['month'] = np.array([1.0, 2.0, 3.0])
         with self.assertRaises(Warning):
             self.cat1.concatenate(self.cat2)
+
+class TestCatalogMTFilter(unittest.TestCase):
+    
+    def setUp(self):
+        self.mt_table = np.array([
+                         [2000, 3.0],
+                         [1970, 4.0],
+                         [1900, 5.0]])
+        mags = [6,
+                4,
+                6,
+                4.5,
+                4,
+                3.5,
+                3.5,
+                1.2]
+        year = np.array([1850,  # E : too early, but mag ok otherwise
+                         1875,  # E : too early
+                         1905,  # I
+                         1950,  # E 
+                         1971,  # I : on magnitude boundary
+                         1972,  # E
+                         2000,  # I : on date boundary
+                         2015]) # E
+        eventID = ["Exclude:TooEarlyBigMag", 
+                   "Exclude:TooEarlySmallMag",
+                   "Include:FreeAndClear",
+                   "Exclude:TooSmallFor(only)ThisPeriod",
+                   "Include:OnMagnitudeBoundary",
+                   "Exclude:TooSmallForThisAndPrevPeriods",
+                   "Include:OnDateBoundary",
+                   "Exclude:TooSmallForAllPeriods"]
+        self.valid_years = np.array([1905, 1971, 2000])
+        self.valid_mags = np.array([6, 4, 3.5])
+        fill = lambda val: [val for _ in year]
+        data=dict(year=year,
+                  month=np.array(fill(1)),
+                  day=np.array(fill(1)),
+                  hour=np.array(fill(0)),
+                  minute=np.array(fill(0)),
+                  second=np.array(fill(0)),
+                  magnitude=np.array(mags),
+                  latitude=np.array(fill(0)),
+                  longitude=np.array(fill(0)),
+                  depth=np.array(fill(0)),
+                  eventID=eventID,
+                  Agency=fill(""))
+        self.catalog = Catalogue.make_from_dict(data)
+    
+    def test_mt_filter(self):
+        tb = self.mt_table
+        cat = self.catalog
+        print("all", cat)
+        cat.catalogue_mt_filter(tb)
+        print("After filtering:", cat)
+        np.testing.assert_allclose(cat.data['year'], self.valid_years)
+        np.testing.assert_allclose(cat.data['magnitude'], self.valid_mags)
+
+
+
