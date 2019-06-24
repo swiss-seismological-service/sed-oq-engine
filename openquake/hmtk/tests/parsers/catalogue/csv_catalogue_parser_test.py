@@ -121,13 +121,42 @@ class TestCsvCatalogueWriter(unittest.TestCase):
                                             'TEST_OUTPUT_CATALOGUE.csv')
         print(self.output_filename)
         self.catalogue = Catalogue()
-        self.catalogue.data['eventID'] = ['1', '2', '3', '4', '5']
-        self.catalogue.data['magnitude'] = np.array([5.6, 5.4, 4.8, 4.3, 5.])
-        self.catalogue.data['year'] = np.array([1960, 1965, 1970, 1980, 1990])
-        self.catalogue.data['ErrorStrike'] = np.array([np.nan, np.nan, np.nan,
-                                                       np.nan, np.nan])
-        self.magnitude_table = np.array([[1990., 4.5], [1970., 5.5]])
-        self.flag = np.array([1, 1, 1, 1, 0], dtype=bool)
+
+        self.catalogue.data['eventID'] = eventID = [
+            "Exclude:TooEarlyBigMag",
+            "Exclude:TooEarlySmallMag",
+            "Include:FreeAndClear",
+            "Exclude:TooSmallFor(only)ThisPeriod",
+            "Include:OnMagnitudeBoundary",
+            "Exclude:TooSmallForThisAndPrevPeriods",
+            "Include:OnDateBoundary",
+            "Exclude:TooSmallForAllPeriods"]
+        self.catalogue.data['year'] = np.array(
+            [1850,  # E : too early, but mag ok otherwise
+             1875,  # E : too early [filtered out by flag]
+             1905,  # I
+             1950,  # E
+             1971,  # I : on magnitude boundary [filtered out by flag]
+             1972,  # E
+             2000,  # I : on date boundary
+             2015]) # E
+        self.catalogue.data['magnitude'] = np.array(
+            [6,
+            4,
+            6,
+            4.5,
+            4,
+            3.5,
+            3.5,
+            1.2])
+        self.catalogue.data['ErrorStrike'] = np.array([np.nan]*8)
+        self.magnitude_table = np.array([
+            [2000, 3.0],
+            [1970, 4.0],
+            [1900, 5.0]])
+
+        self.flag = np.array([True, False, True, True, False, True, True, True])
+        self.meets_mt_requirements = [False, False, True, False, True, False, True, False]
 
     def check_catalogues_are_equal(self, cat1, cat2):
         '''
@@ -143,6 +172,23 @@ class TestCsvCatalogueWriter(unittest.TestCase):
 
         np.testing.assert_array_almost_equal(cat1.data['magnitude'],
                                              cat2.data['magnitude'])
+
+    def get_expected_catalog_via_flag(self, expected_flag):
+        """
+        returns a catalog containing only rows corresponding to the provided flag
+        :param expected_flag:
+        :return: subset of catalog
+        """
+        expected_catalogue = Catalogue()
+        for field in self.catalogue.data:
+            data = self.catalogue.data[field]
+            if isinstance(data, np.ndarray):
+                expected_catalogue.data[field] = np.array(
+                    [value for value, keep in zip(data, expected_flag) if keep], dtype=data.dtype)
+            else:
+                expected_catalogue.data[field] = [
+                    value for value, keep in zip(data, expected_flag) if keep]
+        return expected_catalogue
 
     def test_catalogue_writer_no_purging(self):
         '''
@@ -165,12 +211,8 @@ class TestCsvCatalogueWriter(unittest.TestCase):
         parser = CsvCatalogueParser(self.output_filename)
         cat2 = parser.read_file()
 
-        expected_catalogue = Catalogue()
-        expected_catalogue.data['eventID'] = ['1', '2', '3', '4']
-        expected_catalogue.data['magnitude'] = np.array([5.6, 5.4, 4.8, 4.3])
-        expected_catalogue.data['year'] = np.array([1960, 1965, 1970, 1980])
-        expected_catalogue.data['ErrorStrike'] = np.array([np.nan, np.nan,
-                                                           np.nan, np.nan])
+        expected_catalogue = self.get_expected_catalog_via_flag(self.flag)
+
         self.check_catalogues_are_equal(expected_catalogue, cat2)
 
     def test_catalogue_writer_only_mag_table_purging(self):
@@ -183,12 +225,8 @@ class TestCsvCatalogueWriter(unittest.TestCase):
         parser = CsvCatalogueParser(self.output_filename)
         cat2 = parser.read_file()
 
-        expected_catalogue = Catalogue()
-        expected_catalogue.data['eventID'] = ['1', '3', '5']
-        expected_catalogue.data['magnitude'] = np.array([5.6, 4.8, 5.0])
-        expected_catalogue.data['year'] = np.array([1960, 1970, 1990])
-        expected_catalogue.data['ErrorStrike'] = np.array([np.nan, np.nan,
-                                                           np.nan])
+        expected_catalogue = self.get_expected_catalog_via_flag(self.meets_mt_requirements)
+
         self.check_catalogues_are_equal(expected_catalogue, cat2)
 
     def test_catalogue_writer_both_purging(self):
@@ -204,11 +242,8 @@ class TestCsvCatalogueWriter(unittest.TestCase):
         parser = CsvCatalogueParser(self.output_filename)
         cat2 = parser.read_file()
 
-        expected_catalogue = Catalogue()
-        expected_catalogue.data['eventID'] = ['1', '3']
-        expected_catalogue.data['magnitude'] = np.array([5.6, 4.8])
-        expected_catalogue.data['year'] = np.array([1960, 1970])
-        expected_catalogue.data['ErrorStrike'] = np.array([np.nan, np.nan])
+        expected_catalogue = self.get_expected_catalog_via_flag(
+            np.logical_and(self.meets_mt_requirements, self.flag))
         self.check_catalogues_are_equal(expected_catalogue, cat2)
 
     def tearDown(self):

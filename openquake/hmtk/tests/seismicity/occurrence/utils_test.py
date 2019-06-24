@@ -76,7 +76,7 @@ class RecurrenceTableTestCase(unittest.TestCase):
         filename = os.path.join(self.BASE_DATA_PATH,
                                 'recurrence_test_cat_B.csv')
         test_data = np.genfromtxt(filename, delimiter=',', skip_header=1)
-        # Create the catalogue A
+        # Create the catalogue B
         self.catalogueB = Catalogue.make_from_dict(
             {'year': test_data[:, 3], 'magnitude': test_data[:, 17]})
 
@@ -85,7 +85,7 @@ class RecurrenceTableTestCase(unittest.TestCase):
                                 'recurrence_table_test_A.csv')
         self.true_tableA = np.genfromtxt(filename, delimiter=',')
 
-        # Read the verification table A
+        # Read the verification table B
         filename = os.path.join(self.BASE_DATA_PATH,
                                 'recurrence_table_test_B.csv')
         self.true_tableB = np.genfromtxt(filename, delimiter=',')
@@ -145,6 +145,72 @@ class RecurrenceTableTestCase(unittest.TestCase):
         cmag, ctime, ref_mag, dmag, _ = rec_utils.input_checks(catalogue,
                                                                config, fake_completeness_table)
         self.assertEqual(0.1, dmag)
+
+
+class RecurrenceTableTestCase2(unittest.TestCase):
+    class TestCatalogMTFilter(unittest.TestCase):
+
+        def setUp(self):
+            self.mt_table = np.array([
+                [2000, 3.0],
+                [1970, 4.0],
+                [1900, 5.0]])
+            mags = [6,
+                    4,
+                    6,
+                    4.5,
+                    4,
+                    3.5,
+                    3.5,
+                    1.2]
+            year = np.array([1850,  # E : too early, but mag ok otherwise
+                             1875,  # E : too early
+                             1905,  # I
+                             1950,  # E
+                             1971,  # I : on magnitude boundary
+                             1972,  # E
+                             2000,  # I : on date boundary
+                             2015])  # E
+            eventID = ["Exclude:TooEarlyBigMag",
+                       "Exclude:TooEarlySmallMag",
+                       "Include:FreeAndClear",
+                       "Exclude:TooSmallFor(only)ThisPeriod",
+                       "Include:OnMagnitudeBoundary",
+                       "Exclude:TooSmallForThisAndPrevPeriods",
+                       "Include:OnDateBoundary",
+                       "Exclude:TooSmallForAllPeriods"]
+            self.valid_years = np.array([1905, 1971, 2000])
+            self.valid_mags = np.array([6, 4, 3.5])
+            fill = lambda val: [val for _ in year]
+            data = dict(year=year,
+                        month=np.array(fill(1)),
+                        day=np.array(fill(1)),
+                        hour=np.array(fill(0)),
+                        minute=np.array(fill(0)),
+                        second=np.array(fill(0)),
+                        magnitude=np.array(mags),
+                        latitude=np.array(fill(0)),
+                        longitude=np.array(fill(0)),
+                        depth=np.array(fill(0)),
+                        eventID=eventID,
+                        Agency=fill(""))
+            self.catalog = Catalogue.make_from_dict(data)
+
+        def test_catalogue_counts(self):
+            from openquake.hmtk.seismicity.occurrence import utils
+            tb = self.mt_table
+            cat = self.catalog
+
+            expected_cent_mag = np.arange(3.1, 6.2, 0.2)
+            expected_durations = np.array([16, 16, 16, 16, 16, 46, 46, 46, 46, 46, 116, 116, 116, 116, 116, 116],
+                                          dtype=np.float)
+            expected_nobs = np.array([0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], dtype=np.float)
+
+            cent_mag, t_per, n_obs = utils.get_completeness_counts(cat, tb, 0.2)
+            self.assertEqual(sum(n_obs), 3, 'Expected 3 events')
+            np.testing.assert_allclose(expected_cent_mag, cent_mag)
+            np.testing.assert_allclose(expected_durations, t_per)
+            np.testing.assert_allclose(expected_nobs, n_obs)
 
 
 class TestSyntheticCatalogues(unittest.TestCase):

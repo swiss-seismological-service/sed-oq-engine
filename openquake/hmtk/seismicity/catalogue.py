@@ -112,7 +112,7 @@ class Catalogue(object):
 
     def __len__(self):
         return self.get_number_events()
-    
+
     def __str__(self):
         """
         Returns a shortened print of the catalogue
@@ -159,7 +159,7 @@ class Catalogue(object):
         """
         if isinstance(key, int):
             # Gets the row specied
-            row =[]
+            row = []
             for attr in self.SORTED_ATTRIBUTE_LIST:
                 if len(self.data[attr]):
                     row.append(self.data[attr][key])
@@ -177,7 +177,7 @@ class Catalogue(object):
         Iteration yields for each event a list of data
         """
         for i in range(len(self)):
-            row =[]
+            row = []
             for key in self.SORTED_ATTRIBUTE_LIST:
                 if len(self.data[key]):
                     row.append(self.data[key][i])
@@ -262,6 +262,10 @@ class Catalogue(object):
     def make_from_dict(cls, data):
         cat = cls()
         cat.data = data
+        # add an empty value for each key that isn't represented
+        for key in cls.TOTAL_ATTRIBUTE_LIST:
+            if key not in cat.data:
+                cat.data[key] = []
         cat.update_end_year()
         return cat
 
@@ -282,24 +286,31 @@ class Catalogue(object):
     def catalogue_mt_filter(self, mt_table, flag=None):
         """
         Filter the catalogue using a magnitude-time table. The table has
-        two columns and n-rows.
+        two columns and n-rows, increasing or decreasing monotonically
+        with an inverse relationship between magnitude and time
 
         :param nump.ndarray mt_table:
-            Magnitude time table with n-rows where column 1 is year and column
-            2 is magnitude
+            Magnitude time table with n-rows where first column [0] is year
+            and second column [1] is magnitude
 
         """
-        if flag is None:
-            # No flag defined, therefore all events are initially valid
-            flag = np.ones(self.get_number_events(), dtype=bool)
+        if mt_table is None or len(mt_table) == 0:
+            raise ValueError('Attempting to filter with an empty table')
 
-        for comp_val in mt_table:
-            id0 = np.logical_and(self.data['year'].astype(float) < comp_val[0],
-                                 self.data['magnitude'] < comp_val[1])
-            print(id0)
-            flag[id0] = False
-        if not np.all(flag):
-            self.purge_catalogue(flag)
+        tbt = np.array(mt_table).T
+        all_monotonic = (all(x <= y for x, y in zip(tbt[0], tbt[0][1:])) and
+                         all(x >= y for x, y in zip(tbt[1], tbt[1][1:]))) or \
+                        (all(x >= y for x, y in zip(tbt[0], tbt[0][1:])) and
+                         all(x <= y for x, y in zip(tbt[1], tbt[1][1:])))
+        if not all_monotonic:
+            raise ValueError('Magnitude Table must be ascending/descending monotonically, with completion magnitudes' +
+                             'increasing into the past')
+
+        valid_idx = [any([cy >= fy and cm >= fm for fy, fm in mt_table]) for cy, cm in
+                     zip(self['year'], self['magnitude'])]
+        if flag is not None:
+            valid_idx = np.logical_and(valid_idx, flag)
+        self.purge_catalogue(valid_idx)
 
     def get_bounding_box(self):
         """
