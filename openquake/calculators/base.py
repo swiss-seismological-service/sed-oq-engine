@@ -52,7 +52,6 @@ U64 = numpy.uint64
 F32 = numpy.float32
 TWO16 = 2 ** 16
 TWO32 = 2 ** 32
-RUPTURES_PER_BLOCK = 100000  # used in classical_split_filter
 
 
 class InvalidCalculationID(Exception):
@@ -132,7 +131,7 @@ class BaseCalculator(metaclass=abc.ABCMeta):
         """
         :returns: a new Monitor instance
         """
-        mon = self._monitor(operation, hdf5=self.datastore.hdf5)
+        mon = self._monitor(operation)
         self._monitor.calc_id = mon.calc_id = self.datastore.calc_id
         vars(mon).update(kw)
         return mon
@@ -177,7 +176,6 @@ class BaseCalculator(metaclass=abc.ABCMeta):
         """
         with self._monitor:
             self._monitor.username = kw.get('username', '')
-            self._monitor.hdf5 = self.datastore.hdf5
             if concurrent_tasks is None:  # use the job.ini parameter
                 ct = self.oqparam.concurrent_tasks
             else:  # used the parameter passed in the command-line
@@ -334,6 +332,7 @@ class HazardCalculator(BaseCalculator):
     """
     Base class for hazard calculators based on source models
     """
+    # called multiple times in event_based/py
     def block_splitter(self, sources, weight=get_weight, key=lambda src: 1):
         """
         :param sources: a list of sources
@@ -341,15 +340,16 @@ class HazardCalculator(BaseCalculator):
         :param key: None or 'src_group_id'
         :returns: an iterator over blocks of sources
         """
-        ct = self.oqparam.concurrent_tasks or 1
-        maxweight = self.csm.get_maxweight(weight, ct, source.MINWEIGHT)
-        if not hasattr(self, 'logged'):
-            if maxweight == source.MINWEIGHT:
+        if not hasattr(self, 'maxweight'):
+            trt_sources = self.csm.get_trt_sources()
+            self.maxweight = self.csm.get_maxweight(
+                trt_sources, get_weight, self.oqparam.concurrent_tasks,
+                source.MINWEIGHT)
+            if self.maxweight == source.MINWEIGHT:
                 logging.info('Using minweight=%d', source.MINWEIGHT)
             else:
-                logging.info('Using maxweight=%d', maxweight)
-            self.logged = True
-        return general.block_splitter(sources, maxweight, weight, key)
+                logging.info('Using maxweight=%d', self.maxweight)
+        return general.block_splitter(sources, self.maxweight, weight, key)
 
     @general.cached_property
     def src_filter(self):
@@ -401,10 +401,16 @@ class HazardCalculator(BaseCalculator):
         if ('source_model_logic_tree' in oq.inputs and
                 oq.hazard_calculation_id is None):
             self.csm = readinput.get_composite_source_model(
-                oq, self.monitor(), srcfilter=self.src_filter)
-            msg = views.view('dupl_sources', self.datastore)
-            if msg:
-                logging.warn(msg)
+                oq, self.datastore.hdf5, srcfilter=self.src_filter)
+            res = views.view('dupl_sources', self.datastore)
+            logging.info(f'The composite source model has {res.val:,d} '
+                         'ruptures')
+            if res:
+                logging.info(res)
+            # sanity check: the stored MFDs can be read again
+            # uncomment this when adding a new MFD class to test it
+            # for s in self.datastore['source_mfds']:
+            #     mfd.from_toml(s, oq.width_of_mfd_bin)
         self.init()  # do this at the end of pre-execute
 
     def save_multi_peril(self):
@@ -423,7 +429,18 @@ class HazardCalculator(BaseCalculator):
                 'You cannot use --hc together with gmfs_file')
             self.read_inputs()
             if 'gmfs' in oq.inputs:
-                save_gmfs(self)
+                if not oq.inputs['gmfs'].endswith('.csv'):
+                    raise NotImplementedError(
+                        'Importer for %s' % oq.inputs['gmfs'])
+                E = len(import_gmfs(self.datastore, oq.inputs['gmfs'],
+                                    self.sitecol.complete.sids))
+                if hasattr(oq, 'number_of_ground_motion_fields'):
+                    if oq.number_of_ground_motion_fields != E:
+                        raise RuntimeError(
+                            'Expected %d ground motion fields, found %d' %
+                            (oq.number_of_ground_motion_fields, E))
+                else:  # set the number of GMFs from the file
+                    oq.number_of_ground_motion_fields = E
             else:
                 self.save_multi_peril()
         elif 'hazard_curves' in oq.inputs:  # read hazard from file
@@ -476,22 +493,10 @@ class HazardCalculator(BaseCalculator):
             calc = calculators[self.__class__.precalc](
                 self.oqparam, self.datastore.calc_id)
             calc.run()
-            self.param = calc.param
-            self.sitecol = calc.sitecol
-            if hasattr(calc, 'assetcol'):
-                self.assetcol = calc.assetcol
-            if hasattr(calc, 'riskmodel'):
-                self.riskmodel = calc.riskmodel
-            if hasattr(calc, 'rlzs_assoc'):
-                self.rlzs_assoc = calc.rlzs_assoc
-            else:
-                # this happens for instance for a scenario_damage without
-                # rupture, gmfs, multi_peril
-                raise InvalidFile(
-                    '%(job_ini)s: missing gmfs_csv, multi_peril_csv' %
-                    oq.inputs)
-            if hasattr(calc, 'csm'):  # no scenario
-                self.csm = calc.csm
+            for name in ('csm param sitecol assetcol riskmodel rlzs_assoc '
+                         'policy_name policy_dict').split():
+                if hasattr(calc, name):
+                    setattr(self, name, getattr(calc, name))
         else:
             self.read_inputs()
         if self.riskmodel:
@@ -538,10 +543,11 @@ class HazardCalculator(BaseCalculator):
         Read the exposure, the riskmodel and update the attributes
         .sitecol, .assetcol
         """
+        oq = self.oqparam
         with self.monitor('reading exposure', autoflush=True):
             self.sitecol, self.assetcol, discarded = (
                 readinput.get_sitecol_assetcol(
-                    self.oqparam, haz_sitecol, self.riskmodel.loss_types))
+                    oq, haz_sitecol, self.riskmodel.loss_types))
             if len(discarded):
                 self.datastore['discarded'] = discarded
                 if hasattr(self, 'rup'):
@@ -550,14 +556,40 @@ class HazardCalculator(BaseCalculator):
                                  'from the rupture; use `oq show discarded` '
                                  'to show them and `oq plot_assets` to plot '
                                  'them' % len(discarded))
-                elif not self.oqparam.discard_assets:  # raise an error
+                elif not oq.discard_assets:  # raise an error
                     self.datastore['sitecol'] = self.sitecol
                     self.datastore['assetcol'] = self.assetcol
                     raise RuntimeError(
                         '%d assets were discarded; use `oq show discarded` to'
                         ' show them and `oq plot_assets` to plot them' %
                         len(discarded))
+        self.policy_name = ''
+        self.policy_dict = {}
+        if oq.insurance:
+            self.load_insurance_data(oq.insurance, oq.inputs['insurance'])
         return readinput.exposure
+
+    def load_insurance_data(self, ins_types, ins_files):
+        """
+        Read the insurance files and populate the policy_dict
+        """
+        for loss_type, fname in zip(ins_types, ins_files):
+            array = hdf5.read_csv(
+                fname, {'insurance_limit': float, 'deductible': float,
+                        None: object}).array
+            policy_name = array.dtype.names[0]
+            policy_idx = getattr(self.assetcol.tagcol, policy_name + '_idx')
+            insurance = numpy.zeros((len(policy_idx), 2))
+            for pol, ded, lim in array[
+                    [policy_name, 'deductible', 'insurance_limit']]:
+                insurance[policy_idx[pol]] = ded, lim
+            self.policy_dict[loss_type] = insurance
+            if self.policy_name and policy_name != self.policy_name:
+                raise ValueError(
+                    'The file %s contains %s as policy field, but we were '
+                    'expecting %s' % (fname, policy_name, self.policy_name))
+            else:
+                self.policy_name = policy_name
 
     def load_riskmodel(self):
         # to be called before read_exposure
@@ -856,6 +888,12 @@ class RiskCalculator(HazardCalculator):
         return getter
 
     def _gen_riskinputs(self, kind):
+        hazard = ('gmf_data' in self.datastore or 'poes' in self.datastore or
+                  'multi_peril' in self.datastore)
+        if not hazard:
+            raise InvalidFile('Did you forget gmfs_csv|hazard_curves_csv|'
+                              'multi_peril_csv in %s?'
+                              % self.oqparam.inputs['job_ini'])
         rinfo_dt = numpy.dtype([('sid', U16), ('num_assets', U16)])
         rinfo = []
         assets_by_site = self.assetcol.assets_by_site()
@@ -884,45 +922,12 @@ class RiskCalculator(HazardCalculator):
             self.core_task.__func__,
             (self.riskinputs, self.riskmodel, self.param, self.monitor()),
             concurrent_tasks=self.oqparam.concurrent_tasks or 1,
-            weight=get_weight
+            weight=get_weight, hdf5path=self.datastore.filename
         ).reduce(self.combine)
         return res
 
     def combine(self, acc, res):
         return acc + res
-
-
-def save_gmfs(calculator):
-    """
-    :param calculator: a scenario_risk/damage or event_based_risk calculator
-    :returns: a pair (eids, R) where R is the number of realizations
-    """
-    dstore = calculator.datastore
-    oq = calculator.oqparam
-    logging.info('Reading gmfs from file')
-    if oq.inputs['gmfs'].endswith('.csv'):
-        # TODO: check if import_gmfs can be removed
-        eids = import_gmfs(
-            dstore, oq.inputs['gmfs'], calculator.sitecol.complete.sids)
-    else:  # XML
-        eids, gmfs = readinput.eids, readinput.gmfs
-    E = len(eids)
-    events = numpy.zeros(E, rupture.events_dt)
-    events['id'] = eids
-    calculator.eids = eids
-    if hasattr(oq, 'number_of_ground_motion_fields'):
-        if oq.number_of_ground_motion_fields != E:
-            raise RuntimeError(
-                'Expected %d ground motion fields, found %d' %
-                (oq.number_of_ground_motion_fields, E))
-    else:  # set the number of GMFs from the file
-        oq.number_of_ground_motion_fields = E
-    # NB: save_gmfs redefine oq.sites in case of GMFs from XML or CSV
-    if oq.inputs['gmfs'].endswith('.xml'):
-        haz_sitecol = readinput.get_site_collection(oq)
-        N, E, M = gmfs.shape
-        save_gmf_data(dstore, haz_sitecol, gmfs[haz_sitecol.sids],
-                      oq.imtls, events)
 
 
 def save_gmf_data(dstore, sitecol, gmfs, imts, events=()):
@@ -983,7 +988,7 @@ def import_gmfs(dstore, fname, sids):
     array = hdf5.read_csv(fname, {'sid': U32, 'eid': U64, None: F32}).array
     names = array.dtype.names
     if names[0] == 'rlzi':  # backward compatbility
-        names = names[1:]
+        names = names[1:]  # discard the field rlzi
     imts = [name[4:] for name in names[2:]]
     gmf_data_dt = dstore['oqparam'].gmf_data_dt()
     arr = numpy.zeros(len(array), gmf_data_dt)
@@ -1016,8 +1021,5 @@ def import_gmfs(dstore, fname, sids):
             dstore.extend('gmf_data/data', gmvs)
     dstore['gmf_data/indices'] = numpy.array(lst, U32)
     dstore['gmf_data/imts'] = ' '.join(imts)
-    sig_eps = numpy.zeros(len(eids), getters.sig_eps_dt(imts))
-    sig_eps['eid'] = eids
-    dstore['gmf_data/sigma_epsilon'] = sig_eps
     dstore['weights'] = numpy.ones(1)
     return eids

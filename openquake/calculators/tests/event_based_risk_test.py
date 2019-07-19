@@ -109,6 +109,16 @@ class EventBasedRiskTestCase(CalculatorTestCase):
         tmp = gettemp(rst_table(arr))
         self.assertEqualFiles('expected/src_loss_table.txt', tmp)
 
+    def test_case_1_eb(self):
+        # this is a case with insured losses
+        self.run_calc(case_1.__file__, 'job_eb.ini')
+
+        [fname] = export(('avg_losses', 'csv'), self.calc.datastore)
+        self.assertEqualFiles('expected/%s' % strip_calc_id(fname), fname)
+
+        [fname] = export(('losses_by_event', 'csv'), self.calc.datastore)
+        self.assertEqualFiles('expected/%s' % strip_calc_id(fname), fname)
+
     def test_case_1g(self):
         # vulnerability function with PMF
         self.run_calc(case_1g.__file__, 'job_h.ini,job_r.ini')
@@ -306,13 +316,13 @@ class EventBasedRiskTestCase(CalculatorTestCase):
         self.assertEqualFiles(
             'expected/portfolio_losses.txt', fname, delta=1E-5)
 
-        # this is a case with exposure and region_grid_spacing=1
+        # this is a case with exposure, site model and region_grid_spacing
         self.run_calc(case_miriam.__file__, 'job2.ini')
         hcurves = dict(extract(self.calc.datastore, 'hcurves'))['all']
         sitecol = self.calc.datastore['sitecol']  # filtered sitecol
         self.assertEqual(len(hcurves), len(sitecol))
         assetcol = self.calc.datastore['assetcol']
-        self.assertEqual(len(sitecol), 15)
+        self.assertEqual(len(sitecol), 12)
         self.assertGreater(sitecol.vs30.sum(), 0)
         self.assertEqual(len(assetcol), 548)
 

@@ -49,9 +49,10 @@ from openquake.calculators.views import view
 from openquake.qa_tests_data.classical import case_1, case_9, case_18
 from openquake.qa_tests_data.classical_risk import case_3
 from openquake.qa_tests_data.scenario import case_4
-from openquake.qa_tests_data.event_based import case_2, case_5, case_16, case_21
+from openquake.qa_tests_data.event_based import (
+    case_2, case_5, case_16, case_21)
 from openquake.qa_tests_data.event_based_risk import (
-    case_master, case_1 as case_exposure)
+    case_master, case_1 as case_eb)
 from openquake.qa_tests_data.gmf_ebrisk import case_1 as ebrisk
 from openquake.server import manage, dbapi, dbserver
 from openquake.server.tests import data as test_data
@@ -79,8 +80,7 @@ class InfoTestCase(unittest.TestCase):
     EXPECTED = '''<CompositionInfo
 b1, x15.xml, grp=[0], weight=1.0: 1 realization(s)>
 See http://docs.openquake.org/oq-engine/stable/effective-realizations.html for an explanation
-<RlzsAssoc(size=1, rlzs=1)
-0,'[AkkarBommer2010]': [0]>'''
+<RlzsAssoc(size=1, rlzs=1)>'''
 
     def test_zip(self):
         path = os.path.join(DATADIR, 'frenchbug.zip')
@@ -229,11 +229,12 @@ class RunShowExportTestCase(unittest.TestCase):
 
         with Print.patch() as p:
             show('sitecol', self.calc_id)
-        self.assertEqual(str(p), '<SiteCollection with 1/1 sites>')
+        self.assertEqual(str(p), 'sids,lon,lat,depth,vs30,vs30measured\n'
+                         '0,0.00000,0.00000,-0.10000,8.000000E+02,1')
 
         with Print.patch() as p:
             show('slow_sources', self.calc_id)
-        self.assertIn('grp_id source_id code gidx1 gidx2 num_ruptures '
+        self.assertIn('source_id grp_id code num_ruptures '
                       'calc_time num_sites', str(p))
 
     def test_show_attrs(self):
@@ -351,14 +352,15 @@ class ZipTestCase(unittest.TestCase):
 
     def test_zip_ebr(self):
         # this is a case with an exposure.csv
-        ini = os.path.join(os.path.dirname(case_exposure.__file__), 'job.ini')
+        ini = os.path.join(os.path.dirname(case_eb.__file__), 'job_eb.ini')
         dtemp = tempfile.mkdtemp()
         xzip = os.path.join(dtemp, 'x.zip')
         zip_cmd(ini, xzip, None)
         names = sorted(zipfile.ZipFile(xzip).namelist())
         self.assertEqual(
             ['exposure.csv', 'exposure1.xml', 'gmpe_logic_tree.xml',
-             'job.ini', 'source_model.xml', 'source_model_logic_tree.xml',
+             'job_eb.ini', 'policy.csv', 'source_model.xml',
+             'source_model_logic_tree.xml',
              'vulnerability_model_nonstco.xml',
              'vulnerability_model_stco.xml'],
             names)

@@ -2,7 +2,7 @@
 
 ![OpenQuake Logo](https://github.com/gem/oq-infrastructure/raw/master/logos/oq-logo.png)
 
-The **OpenQuake Engine** is an open source application that allows users to compute **seismic hazard** and **seismic risk** of earthquakes on a global scale. It runs on Linux, macOS and Windows, on laptops, workstations, standalone servers and multi-node clusters.
+The **OpenQuake Engine** is an open source application that allows users to compute **seismic hazard** and **seismic risk** of earthquakes on a global scale. It runs on Linux, macOS and Windows, on laptops, workstations, standalone servers and multi-node clusters. DOI: [10.13117/openquake.engine](https://doi.org/10.13117/openquake.engine)
 
 <!-- GEM BEGIN: apply the following patch with the proper values for the next release
 -[![Build Status](https://travis-ci.org/gem/oq-engine.svg?branch=master)](https://travis-ci.org/gem/oq-engine)
@@ -31,9 +31,9 @@ The **OpenQuake Engine** is an open source application that allows users to comp
 
 ### Current stable
 
-Current stable version is the **OpenQuake Engine 3.5** 'Palmieri'. The documentation is available at https://github.com/gem/oq-engine/tree/engine-3.5#openquake-engine.
+Current stable version is the **OpenQuake Engine 3.6** 'Pak Topo'. The documentation is available at https://github.com/gem/oq-engine/tree/engine-3.6#openquake-engine.
 
-* [What's new](https://github.com/gem/oq-engine/blob/engine-3.5/doc/whats-new.md)
+* [What's new](https://github.com/gem/oq-engine/blob/engine-3.6/doc/whats-new.md)
 
 ## Documentation (master tree)
 

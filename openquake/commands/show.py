@@ -18,14 +18,11 @@
 import io
 import os
 import logging
-import numpy
 
 from openquake.baselib import sap
-from openquake.hazardlib import stats
 from openquake.baselib import datastore
 from openquake.commonlib.writers import write_csv
 from openquake.commonlib import util
-from openquake.calculators import getters
 from openquake.calculators.views import view
 from openquake.calculators.extract import extract
 
@@ -73,10 +70,10 @@ def show(what='contents', calc_id=-1, extra=()):
         print(extract(ds, what, *extra))
     elif what in ds:
         obj = ds[what]
-        if hasattr(obj, 'value'):  # an array
-            print(write_csv(io.BytesIO(), obj.value).decode('utf8'))
-        else:
+        if hasattr(obj, 'items'):  # is a group of datasets
             print(obj)
+        else:  # is a single dataset
+            print(write_csv(io.BytesIO(), obj[()]).decode('utf8'))
     else:
         print('%s not found' % what)
 

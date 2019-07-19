@@ -341,14 +341,12 @@ def namelist(value):
     ['a1', 'b_2', '_c']
 
     >>> namelist('a1 b_2 1c')
-    Traceback (most recent call last):
-        ...
-    ValueError: List of names containing an invalid name: 1c
+    ['a1', 'b_2', '1c']
     """
     names = value.replace(',', ' ').split()
     for n in names:
         try:
-            name(n)
+            source_id(n)
         except ValueError:
             raise ValueError('List of names containing an invalid name:'
                              ' %s' % n)
@@ -538,14 +536,14 @@ def positivefloats(value):
     return floats
 
 
-def floats32(value):
+def floats(value):
     """
     :param value:
         string of whitespace separated floats
     :returns:
-        an array of 32 bit floats
+        a list of floats
     """
-    return numpy.float32(value.split())
+    return list(map(float, value.split()))
 
 
 _BOOL_DICT = {

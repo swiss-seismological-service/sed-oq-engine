@@ -183,9 +183,16 @@ def view_slow_sources(token, dstore, maxrows=20):
     """
     Returns the slowest sources
     """
-    info = dstore['source_info'][()]
+    info = dstore['source_info']['source_id', 'grp_id', 'code', 'num_ruptures',
+                                 'calc_time', 'num_sites', 'weight']
+    info = info[info['calc_time'] > 0]
     info.sort(order='calc_time')
-    return rst_table(info[::-1][:maxrows])
+    data = numpy.zeros(len(info), [(nam, object) for nam in info.dtype.names]
+                       + [('speed', float)])
+    for name in info.dtype.names:
+        data[name] = info[name]
+    data['speed'] = info['weight'] / info['calc_time']
+    return rst_table(data[::-1][:maxrows])
 
 
 @view.add('contents')
@@ -236,8 +243,7 @@ def view_ruptures_per_trt(token, dstore):
             tot_ruptures += src_group.tot_ruptures
     rows = [('#TRT models', num_trts),
             ('#eff_ruptures', eff_ruptures),
-            ('#tot_ruptures', tot_ruptures),
-            ('#tot_weight', csm_info.tot_weight)]
+            ('#tot_ruptures', tot_ruptures)]
     if len(tbl) > 1:
         summary = '\n\n' + rst_table(rows)
     else:
@@ -615,10 +621,10 @@ def view_task_hazard(token, dstore):
     taskno = rec['taskno']
     arr = get_array(dstore['source_data'][()], taskno=taskno)
     st = [stats('nsites', arr['nsites']), stats('weight', arr['weight'])]
-    sources = dstore['task_sources'][taskno - 1].split()
-    srcs = set(decode(s).split(':', 1)[0] for s in sources)
-    res = 'taskno=%d, weight=%d, duration=%d s, sources="%s"\n\n' % (
-        taskno, rec['weight'], rec['duration'], ' '.join(sorted(srcs)))
+    sources = dstore['source_info']['source_id'][arr['src_id']]
+    srcs = set(s.split(':', 1)[0] for s in sources)
+    res = ('taskno=%d, weight=%d, duration=%d s, sources="%s"\n\n'
+           % (taskno, rec['weight'], rec['duration'], ' '.join(sorted(srcs))))
     return res + rst_table(st, header='variable mean stddev min max n'.split())
 
 
@@ -695,7 +701,7 @@ def view_dupl_sources_time(token, dstore):
             calc_time = records['calc_time'].sum()
             tot_time += calc_time
             tbl.append((source_id, calc_time, len(records)))
-    if tbl and info.attrs.get('has_dupl_sources'):
+    if tbl:
         tot = info['calc_time'].sum() + info['split_time'].sum()
         percent = tot_time / tot * 100
         m = '\nTotal time in duplicated sources: %d/%d (%d%%)' % (
@@ -816,19 +822,12 @@ Source = collections.namedtuple(
     'Source', 'source_id code num_ruptures checksum')
 
 
-def all_equal(records):
-    rec0 = records[0]
-    for rec in records[1:]:
-        for v1, v2 in zip(rec0, rec):
-            if isinstance(v1, numpy.ndarray):  # field geom
-                if len(v1) != len(v2):
-                    return False
-                for name in v1.dtype.names:
-                    if not numpy.allclose(v1[name], v2[name]):
-                        return False
-            elif v1 != v2:
-                return False
-    return True
+class String(str):
+    # a string with a value, used in show dupl_sources
+    def __new__(cls, msg, val):
+        self = str.__new__(cls, msg)
+        self.val = val
+        return self
 
 
 @view.add('dupl_sources')
@@ -836,29 +835,25 @@ def view_dupl_sources(token, dstore):
     """
     Show the sources with the same ID and the truly duplicated sources
     """
-    fields = ('source_id', 'code', 'gidx1', 'gidx2', 'num_ruptures',
-              'checksum')
-    dic = group_array(dstore['source_info'][fields], 'source_id')
-    sameid = []
+    array = dstore['source_info']['source_id', 'checksum', 'num_ruptures']
+    dic = group_array(array, 'source_id', 'checksum')
     dupl = []
-    for source_id, group in dic.items():
-        if len(group) > 1:  # same ID sources
-            sources = []
-            for rec in group:
-                src = Source(source_id, rec['code'], rec['num_ruptures'],
-                             rec['checksum'])
-                sources.append(src)
-            if all_equal(sources):
-                dupl.append(source_id)
-            sameid.append(source_id)
+    uniq = []
+    muls = []
+    nr = 0
+    for (source_id, checksum), group in dic.items():
+        mul = len(group)
+        nr += group[0]['num_ruptures']
+        if mul > 1:  # duplicate
+            muls.append(mul)
+            dupl.append(source_id)
+        else:
+            uniq.append(source_id)
     if not dupl:
-        return ''
-    msg = ('Found %d source(s) with the same ID and %d true duplicate(s): %s'
-           % (len(sameid), len(dupl), dupl))
-    fakedupl = set(sameid) - set(dupl)
-    if fakedupl:
-        msg += '\nHere is a fake duplicate: %s' % fakedupl.pop()
-    return msg
+        return String('', nr)
+    u, d, m = len(uniq), len(dupl), sum(muls) / len(dupl)
+    return String('Found %d unique sources and %d duplicate sources with'
+                  ' multiplicity %.1f: %s' % (u, d, m, numpy.array(dupl)), nr)
 
 
 @view.add('extreme_groups')
@@ -898,3 +893,15 @@ def view_gmvs_to_hazard(token, dstore):
             poe = 1 - numpy.exp(- exceeding / num_ses)
             tbl.append((sid, rlz, imt, iml, exceeding, poe))
     return rst_table(tbl, ['sid', 'rlz', 'imt', 'iml', 'num_exceeding', 'poe'])
+
+
+@view.add('gmvs')
+def view_gmvs(token, dstore):
+    """
+    Show the GMVs on a given site ID
+    """
+    sid = int(token.split(':')[1])  # called as view_gmvs:sid
+    assert sid in dstore['sitecol'].sids
+    data = dstore['gmf_data/data'][()]
+    gmvs = data[data['sid'] == sid]['gmv']
+    return rst_table(gmvs)

@@ -22,14 +22,13 @@ import operator
 import numpy
 
 from openquake.baselib import parallel, hdf5
-from openquake.baselib.python3compat import encode
 from openquake.baselib.general import AccumDict, block_splitter
-from openquake.hazardlib.contexts import FEWSITES
 from openquake.hazardlib.calc.filters import split_sources
 from openquake.hazardlib.calc.hazard_curve import classical
 from openquake.hazardlib.probability_map import (
     ProbabilityMap, ProbabilityCurve)
-from openquake.commonlib import calc, util, readinput
+from openquake.commonlib import calc, util
+from openquake.commonlib.source_model_factory import random_filtered_sources
 from openquake.calculators import getters
 from openquake.calculators import base
 
@@ -41,7 +40,8 @@ weight = operator.attrgetter('weight')
 grp_extreme_dt = numpy.dtype([('grp_id', U16), ('grp_name', hdf5.vstr),
                              ('extreme_poe', F32)])
 source_data_dt = numpy.dtype(
-    [('taskno', U16), ('nsites', U32), ('nruptures', U32), ('weight', F32)])
+    [('taskno', U16), ('src_id', U32), ('nsites', U32), ('nruptures', U32),
+     ('weight', F32)])
 
 
 def get_src_ids(sources):
@@ -81,7 +81,7 @@ def classical_split_filter(srcs, srcfilter, gsims, params, monitor):
     ss = int(os.environ.get('OQ_SAMPLE_SOURCES', 0))
     if ss:
         splits, stime = split_sources(srcs)
-        srcs = readinput.random_filtered_sources(splits, srcfilter, ss)
+        srcs = random_filtered_sources(splits, srcfilter, ss)
         yield classical(srcs, srcfilter, gsims, params, monitor)
         return
     # NB: splitting all the sources improves the distribution significantly,
@@ -91,15 +91,24 @@ def classical_split_filter(srcs, srcfilter, gsims, params, monitor):
         for src, _sites in srcfilter(srcs):
             splits, _stime = split_sources([src])
             sources.extend(srcfilter.filter(splits))
-    blocks = list(block_splitter(sources, params['maxweight'],
-                                 operator.attrgetter('weight')))
-    if blocks:
-        # compute the last block (the smallest one) and yield the others
-        for block in blocks[:-1]:
-            yield classical, block, srcfilter, gsims, params
-        # NB: it is a faster if the first blocks are yielded first
-        # for instance in job_share_small.ini the improvement is 579s -> 466s
-        yield classical(blocks[-1], srcfilter, gsims, params, monitor)
+    if sources:
+        tot = 0
+        sd = AccumDict(accum=numpy.zeros(3))  # nsites, nrupts, weight
+        for src in sources:
+            arr = numpy.array([src.nsites, src.num_ruptures, src.weight])
+            sd[src.id] += arr
+            tot += 1
+        source_data = numpy.array([(monitor.task_no, src_id, s/tot, r, w)
+                                   for src_id, (s, r, w) in sd.items()],
+                                  source_data_dt)
+        first = True
+        for out in parallel.split_task(
+                classical, sources, srcfilter, gsims, params, monitor,
+                duration=params['task_duration']):
+            if first:
+                out['source_data'] = source_data
+                first = False
+            yield out
 
 
 def preclassical(srcs, srcfilter, gsims, params, monitor):
@@ -147,6 +156,8 @@ class ClassicalCalculator(base.HazardCalculator):
             for grp_id, data in dic['rup_data'].items():
                 if len(data):
                     self.datastore.extend('rup/grp-%02d' % grp_id, data)
+            if 'source_data' in dic:
+                self.datastore.extend('source_data', dic['source_data'])
         return acc
 
     def acc0(self):
@@ -184,17 +195,8 @@ class ClassicalCalculator(base.HazardCalculator):
         #     logging.warn('No integration_distance')
         with self.monitor('managing sources', autoflush=True):
             smap = parallel.Starmap(
-                self.core_task.__func__, monitor=self.monitor())
-            source_ids = []
-            data = []
-            for i, sources in enumerate(self._send_sources(smap)):
-                source_ids.append(get_src_ids(sources))
-                for src in sources:  # collect source data
-                    data.append((i, src.nsites, src.num_ruptures, src.weight))
-            if source_ids:
-                self.datastore['task_sources'] = encode(source_ids)
-            self.datastore.extend(
-                'source_data', numpy.array(data, source_data_dt))
+                self.core_task.__func__, hdf5path=self.datastore.filename)
+            self.submit_sources(smap)
         self.calc_times = AccumDict(accum=numpy.zeros(2, F32))
         try:
             acc = smap.reduce(self.agg_dicts, self.acc0())
@@ -203,13 +205,14 @@ class ClassicalCalculator(base.HazardCalculator):
             with self.monitor('store source_info', autoflush=True):
                 self.store_source_info(self.calc_times)
         if acc.nsites:
-            if len(acc.nsites) > 50000:
+            if len(acc.nsites) > 100000:
                 # not saving source_info.num_sites since it would be slow:
                 # we do not want to wait hours for unused information
                 logging.warn(
                     'There are %d contributing sources', len(acc.nsites))
             else:
-                # saving source_info.num_sites since it is fast
+                logging.info('Saving source_info.num_sites for %d sources',
+                             len(acc.nsites))
                 src_ids = sorted(acc.nsites)
                 nsites = [acc.nsites[i] for i in src_ids]
                 self.datastore['source_info'][src_ids, 'num_sites'] = nsites
@@ -218,32 +221,45 @@ class ClassicalCalculator(base.HazardCalculator):
         self.calc_times.clear()  # save a bit of memory
         return acc
 
-    def _send_sources(self, smap):
+    def submit_sources(self, smap):
+        """
+        Send the sources split in tasks
+        """
         oq = self.oqparam
-        nrup = operator.attrgetter('num_ruptures')
+        N, L = len(self.sitecol), len(oq.imtls.array)
+        trt_sources = self.csm.get_trt_sources(optimize_dupl=True)
+        maxweight = min(self.csm.get_maxweight(
+            trt_sources, weight, oq.concurrent_tasks), 1E6)
+        if oq.task_duration is None:  # inferred
+            # from 1 minute up to 6 hours
+            td = max((maxweight * N * L) ** numpy.log10(4) / 3000, 60)
+        else:  # user given
+            td = oq.task_duration
         param = dict(
             truncation_level=oq.truncation_level, imtls=oq.imtls,
             filter_distance=oq.filter_distance, reqv=oq.get_reqv(),
             pointsource_distance=oq.pointsource_distance,
-            maxweight=min(self.csm.get_maxweight(nrup, oq.concurrent_tasks),
-                          base.RUPTURES_PER_BLOCK))
-        logging.info('Max ruptures per task = %(maxweight)d', param)
+            max_sites_disagg=oq.max_sites_disagg,
+            task_duration=td, maxweight=maxweight)
+        logging.info('ruptures_per_task = %(maxweight)d, '
+                     'task_duration = %(task_duration)ds', param)
 
-        num_tasks = 0
-        num_sources = 0
-        for trt, sources in self.csm.get_trt_sources():
+        for trt, sources in trt_sources:
+            heavy_sources = []
             gsims = self.csm.info.gsim_lt.get_gsims(trt)
-            num_sources += len(sources)
             if hasattr(sources, 'atomic') and sources.atomic:
                 smap.submit(sources, self.src_filter, gsims, param,
                             func=classical)
-                yield sources
-                num_tasks += 1
             else:  # regroup the sources in blocks
-                for block in block_splitter(sources, param['maxweight'], nrup):
+                for block in block_splitter(sources, maxweight, weight):
+                    if block.weight > maxweight:
+                        heavy_sources.extend(block)
                     smap.submit(block, self.src_filter, gsims, param)
-                    yield block
-                    num_tasks += 1
+
+            # heavy source are split on the master node
+            if heavy_sources:
+                logging.info('Found %d heavy sources %s, ...',
+                             len(heavy_sources), heavy_sources[0])
 
     def save_hazard_stats(self, acc, pmap_by_kind):
         """
@@ -337,17 +353,18 @@ class ClassicalCalculator(base.HazardCalculator):
             self.datastore.create_dset('hcurves-stats', F32, (N, S, L))
             if oq.poes:
                 self.datastore.create_dset('hmaps-stats', F32, (N, S, M, P))
-        if 'mean' in dict(hstats) and R > 1 and N <= FEWSITES:
+        if 'mean' in dict(hstats) and R > 1 and N <= oq.max_sites_disagg:
             self.datastore.create_dset('best_rlz', U32, (N,))
         ct = oq.concurrent_tasks
         logging.info('Building hazard statistics with %d concurrent_tasks', ct)
         weights = [rlz.weight for rlz in self.rlzs_assoc.realizations]
         allargs = [  # this list is very fast to generate
             (getters.PmapGetter(parent, weights, t.sids, oq.poes),
-             N, hstats, oq.individual_curves)
+             N, hstats, oq.individual_curves, oq.max_sites_disagg)
             for t in self.sitecol.split_in_tiles(ct)]
-        parallel.Starmap(build_hazard_stats, allargs, self.monitor()).reduce(
-            self.save_hazard_stats)
+        parallel.Starmap(build_hazard_stats, allargs,
+                         hdf5path=self.datastore.filename).reduce(
+                             self.save_hazard_stats)
 
 
 @base.calculators.add('preclassical')
@@ -375,12 +392,14 @@ def _build_stat_curve(poes, imtls, stat, weights):
     return ProbabilityCurve(array)
 
 
-def build_hazard_stats(pgetter, N, hstats, individual_curves, monitor):
+def build_hazard_stats(pgetter, N, hstats, individual_curves,
+                       max_sites_disagg, monitor):
     """
     :param pgetter: an :class:`openquake.commonlib.getters.PmapGetter`
     :param N: the total number of sites
     :param hstats: a list of pairs (statname, statfunc)
     :param individual_curves: if True, also build the individual curves
+    :param max_sites_disagg: if there are less sites than this, store rup info
     :param monitor: instance of Monitor
     :returns: a dictionary kind -> ProbabilityMap
 
@@ -416,7 +435,7 @@ def build_hazard_stats(pgetter, N, hstats, individual_curves, monitor):
                     if poes:
                         hmap = calc.make_hmap(pc, pgetter.imtls, poes, sid)
                         pmap_by_kind['hmaps-stats'][s].update(hmap)
-                    if statname == 'mean' and R > 1 and N <= FEWSITES:
+                    if statname == 'mean' and R > 1 and N <= max_sites_disagg:
                         rlz = pmap_by_kind['rlz_by_sid']
                         rlz[sid] = util.closest_to_ref(
                             [p.array for p in pcurves], pc.array)['rlz']

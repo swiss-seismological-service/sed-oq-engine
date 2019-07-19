@@ -186,6 +186,8 @@ def get_source_model_04(node, fname, converter=default):
     converter.fname = fname
     for src_node in node:
         src = converter.convert_node(src_node)
+        if src is None:
+            continue
         if src.source_id in source_ids:
             raise DuplicatedID(
                 'The source ID %s is duplicated!' % src.source_id)
@@ -236,7 +238,7 @@ validators = {
     'posList': valid.posList,
     'pos': valid.lon_lat,
     'aValue': float,
-    'a_val': valid.floats32,
+    'a_val': valid.floats,
     'bValue': valid.positivefloat,
     'b_val': valid.positivefloats,
     'magScaleRel': valid.mag_scale_rel,

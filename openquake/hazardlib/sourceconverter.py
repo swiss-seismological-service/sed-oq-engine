@@ -347,8 +347,7 @@ class RuptureConverter(object):
 
         :param node: a node representing a rupture
         """
-        convert = getattr(self, 'convert_' + striptag(node.tag))
-        return convert(node)
+        return getattr(self, 'convert_' + striptag(node.tag))(node)
 
     def geo_line(self, edge):
         """
@@ -552,6 +551,19 @@ class SourceConverter(RuptureConverter):
         self.spinning_floating = spinning_floating
         self.source_id = source_id
 
+    def convert_node(self, node):
+        """
+        Convert the given rupture node into a hazardlib rupture, depending
+        on the node tag.
+
+        :param node: a node representing a rupture
+        """
+        obj = getattr(self, 'convert_' + striptag(node.tag))(node)
+        source_id = getattr(obj, 'source_id', '')
+        if self.source_id and source_id and source_id not in self.source_id:
+            return
+        return obj
+
     def get_tom(self, node):
         """
         Convert the given node into a Temporal Occurrence Model object.
@@ -596,22 +608,13 @@ class SourceConverter(RuptureConverter):
                     magnitudes=~mfd_node.magnitudes,
                     occurrence_rates=~mfd_node.occurRates)
             elif mfd_node.tag.endswith('YoungsCoppersmithMFD'):
-                if "totalMomentRate" in mfd_node.attrib.keys():
-                    # Return Youngs & Coppersmith from the total moment rate
-                    return mfd.YoungsCoppersmith1985MFD.from_total_moment_rate(
-                        min_mag=mfd_node["minMag"], b_val=mfd_node["bValue"],
-                        char_mag=mfd_node["characteristicMag"],
-                        total_moment_rate=mfd_node["totalMomentRate"],
-                        bin_width=mfd_node["binWidth"])
-                elif "characteristicRate" in mfd_node.attrib.keys():
-                    # Return Youngs & Coppersmith from the total moment rate
-                    return mfd.YoungsCoppersmith1985MFD.\
-                        from_characteristic_rate(
-                            min_mag=mfd_node["minMag"],
-                            b_val=mfd_node["bValue"],
-                            char_mag=mfd_node["characteristicMag"],
-                            char_rate=mfd_node["characteristicRate"],
-                            bin_width=mfd_node["binWidth"])
+                return mfd.YoungsCoppersmith1985MFD(
+                    min_mag=mfd_node["minMag"],
+                    b_val=mfd_node["bValue"],
+                    char_mag=mfd_node["characteristicMag"],
+                    char_rate=mfd_node.get("characteristicRate"),
+                    total_moment_rate=mfd_node.get("totalMomentRate"),
+                    bin_width=mfd_node["binWidth"])
             elif mfd_node.tag.endswith('multiMFD'):
                 return mfd.multi_mfd.MultiMFD.from_node(
                     mfd_node, self.width_of_mfd_bin)
@@ -885,9 +888,9 @@ class SourceConverter(RuptureConverter):
                 assert hasattr(sg, 'occurrence_rate')
         #
         for src_node in node:
-            if self.source_id and self.source_id != src_node['id']:
-                continue  # filter by source_id
             src = self.convert_node(src_node)
+            if src is None:  # filtered out by source_id
+                continue
             # transmit the group attributes to the underlying source
             for attr, value in grp_attrs.items():
                 if attr == 'tectonicRegion':

@@ -270,6 +270,19 @@ def split_in_slices(number, num_slices):
     return slices
 
 
+def gen_slices(n, block_size):
+    """
+    Yields slices of lenght at most block_size
+    """
+    start = 0
+    while True:
+        stop = start + block_size
+        yield slice(start, min(stop, n))
+        start = stop
+        if start >= n:
+            break
+
+
 def split_in_blocks(sequence, hint, weight=lambda item: 1, key=nokey):
     """
     Split the `sequence` in a number of WeightedSequences close to `hint`.
@@ -355,7 +368,7 @@ _tmp_paths = []
 def gettemp(content=None, dir=None, prefix="tmp", suffix="tmp"):
     """Create temporary file with the given content.
 
-    Please note: the temporary file must be deleted by the caller.
+    Please note: the temporary file can be deleted by the caller or not.
 
     :param string content: the content to write to the temporary file.
     :param string dir: directory where the file should be created
@@ -1158,3 +1171,22 @@ def getsizeof(o, ids=None):
         return nbytes + sum(getsizeof(x, ids) for x in o)
 
     return nbytes
+
+
+def add_defaults(array, **kw):
+    """
+    :param array: a structured array
+    :param kw: a dictionary field name -> default value
+    :returns: a new array with additional fields with default values
+    """
+    dtlist = [(name, array.dtype[name]) for name in array.dtype.names]
+    for k, v in kw.items():
+        if k not in array.dtype.names:
+            dtlist.append((k, type(v)))
+    new = numpy.zeros(array.shape, dtlist)
+    for name in array.dtype.names:
+        new[name] = array[name]
+    for k, v in kw.items():
+        if k not in array.dtype.names:
+            new[k] = v
+    return new

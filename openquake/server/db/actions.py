@@ -326,19 +326,20 @@ def finish(db, job_id, status):
        job_id)
 
 
-def del_calc(db, job_id, user):
+def del_calc(db, job_id, user, force=False):
     """
     Delete a calculation and all associated outputs, if possible.
 
     :param db: a :class:`openquake.server.dbapi.Db` instance
     :param job_id: job ID, can be an integer or a string
     :param user: username
+    :param force: delete even if there are dependent calculations
     :returns: None if everything went fine or an error message
     """
     job_id = int(job_id)
     dependent = db(
         'SELECT id FROM job WHERE hazard_calculation_id=?x', job_id)
-    if dependent:
+    if not force and dependent:
         return {"error": 'Cannot delete calculation %d: there '
                 'are calculations '
                 'dependent from it: %s' % (job_id, [j.id for j in dependent])}
@@ -358,10 +359,16 @@ def del_calc(db, job_id, user):
     # try to delete datastore and associated file
     # path has typically the form /home/user/oqdata/calc_XXX
     fname = path + ".hdf5"
-    try:
-        os.remove(fname)
-    except OSError as exc:  # permission error
-        return {"error": 'Could not remove %s: %s' % (fname, exc)}
+    cache = fname.replace('calc_', 'cache_')
+    if os.path.exists(cache):
+        fnames = [fname, cache]
+    else:
+        fnames = [fname]
+    for fname in fnames:
+        try:
+            os.remove(fname)
+        except OSError as exc:  # permission error
+            return {"error": 'Could not remove %s: %s' % (fname, exc)}
     return {"success": fname}
 
 
@@ -696,6 +703,13 @@ SELECT %s FROM job WHERE status='executing' ORDER BY id desc''' % fields)
     return running
 
 
+def get_calc_ids(db, user):
+    """
+    :returns: calculation IDs of the given user
+    """
+    return [r.id for r in db('SELECT id FROM job WHERE user_name=?x', user)]
+
+
 def get_longest_jobs(db):
     """
     :param db:
@@ -781,3 +795,17 @@ def get_job_from_checksum(db, checksum):
     if not jobs:
         return
     return jobs[0]
+
+
+def start_zworkers(db, master):
+    """
+    Start the zmq workers
+    """
+    master.start()
+
+
+def stop_zworkers(db, master):
+    """
+    Stop the zmq workers
+    """
+    master.stop()

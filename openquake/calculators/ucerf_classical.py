@@ -21,7 +21,7 @@ import operator
 import numpy as np
 from openquake.baselib import parallel, general
 from openquake.hazardlib.calc.hazard_curve import classical
-from openquake.commonlib import readinput
+from openquake.commonlib.source_model_factory import random_filtered_sources
 from openquake.calculators import base
 from openquake.calculators.classical import (
     ClassicalCalculator, classical_split_filter)
@@ -53,7 +53,8 @@ class UcerfClassicalCalculator(ClassicalCalculator):
         acc = self.acc0()
         self.nsites = []  # used in agg_dicts
         param = dict(imtls=oq.imtls, truncation_level=oq.truncation_level,
-                     filter_distance=oq.filter_distance, maxweight=1E10)
+                     filter_distance=oq.filter_distance, maxweight=1E10,
+                     task_duration=1000)
         self.calc_times = general.AccumDict(accum=np.zeros(2, np.float32))
         [gsims] = sorted(self.csm.info.gsim_lt.values.values())
         sample = .001 if os.environ.get('OQ_SAMPLE_SOURCES') else None
@@ -62,13 +63,13 @@ class UcerfClassicalCalculator(ClassicalCalculator):
             [src] = grp
             srcs = list(src)
             if sample:
-                srcs = readinput.random_filtered_sources(
-                    srcs, self.src_filter, 1)
+                srcs = random_filtered_sources(srcs, self.src_filter, 1)
             acc = parallel.Starmap.apply(
                 classical_split_filter,
                 (srcs, self.src_filter, gsims, param, monitor),
                 weight=operator.attrgetter('weight'),
                 concurrent_tasks=oq.concurrent_tasks,
+                hdf5path=self.datastore.filename
             ).reduce(self.agg_dicts, acc)
             ucerf = grp.sources[0].orig
             logging.info('Getting background sources from %s', ucerf.source_id)
@@ -77,6 +78,7 @@ class UcerfClassicalCalculator(ClassicalCalculator):
                 classical, (srcs, self.src_filter, gsims, param, monitor),
                 weight=operator.attrgetter('weight'),
                 concurrent_tasks=oq.concurrent_tasks,
+                hdf5path=self.datastore.filename
             ).reduce(self.agg_dicts, acc)
         self.store_rlz_info(acc.eff_ruptures)
         self.store_source_info(self.calc_times)

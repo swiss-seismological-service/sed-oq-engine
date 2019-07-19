@@ -52,6 +52,18 @@ class BetaDistributionTestCase(unittest.TestCase):
             [0.057241368], scientific.BetaDistribution().sample(
                 numpy.array([0.1]), None, numpy.array([0.1])))
 
+    def test_zero_ratios(self):
+        # a loss ratio can be zero if the corresponding CoV is zero
+        scientific.VulnerabilityFunction(
+            'v1', 'PGA', [.1, .2, .3], [0, .1, .2], [0, .2, .3], 'BT')
+
+    def test_large_covs(self):
+        with self.assertRaises(ValueError) as ctx:
+            scientific.VulnerabilityFunction(
+                'v1', 'PGA', [.1, .2, .3], [.05, .1, .2], [.1, .2, 3], 'BT')
+        self.assertIn('The coefficient of variation 3.0 > 2.0 is too large',
+                      str(ctx.exception))
+
 
 epsilons = scientific.make_epsilons(
     numpy.zeros((1, 3)), seed=3, correlation=0)[0]
@@ -547,6 +559,17 @@ class InsuredLossesTestCase(unittest.TestCase):
         numpy.testing.assert_allclose(
             [0, 0.1, 0.4],
             scientific.insured_losses(numpy.array([0.05, 0.2, 0.6]), 0.1, 0.5))
+
+    def test_mean(self):
+        losses1 = numpy.array([0.05, 0.2, 0.6])
+        losses2 = numpy.array([0.01, 0.1, 0.3, 0.55])
+        l1 = len(losses1)
+        l2 = len(losses2)
+        m1 = scientific.insured_losses(losses1, 0.1, 0.5).mean()
+        m2 = scientific.insured_losses(losses2, 0.1, 0.5).mean()
+        m = scientific.insured_losses(numpy.concatenate([losses1, losses2]),
+                                      0.1, 0.5).mean()
+        numpy.testing.assert_allclose((m1 * l1 + m2 * l2) / (l1 + l2), m)
 
 
 class InsuredLossCurveTestCase(unittest.TestCase):

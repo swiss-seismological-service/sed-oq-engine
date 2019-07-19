@@ -17,12 +17,11 @@
 # along with OpenQuake.  If not, see <http://www.gnu.org/licenses/>.
 
 import os
-import sys
 import ast
 import csv
+import uuid
 import inspect
 import logging
-import operator
 import tempfile
 import importlib
 import itertools
@@ -41,6 +40,13 @@ vuint16 = h5py.special_dtype(vlen=numpy.uint16)
 vuint32 = h5py.special_dtype(vlen=numpy.uint32)
 vfloat32 = h5py.special_dtype(vlen=numpy.float32)
 vfloat64 = h5py.special_dtype(vlen=numpy.float64)
+
+
+def uuid1():
+    """
+    :returns: an unique .hdf5 filename without creating it
+    """
+    return os.path.join(tempfile.gettempdir(), str(uuid.uuid1()) + '.hdf5')
 
 
 def maybe_encode(value):
@@ -457,8 +463,7 @@ class ArrayWrapper(object):
 
     def __toh5__(self):
         arr = getattr(self, 'array', ())
-        return (arr, {k: v for k, v in vars(self).items()
-                      if k != 'array' and not k.startswith('_')})
+        return arr, self.to_dict()
 
     def __fromh5__(self, array, attrs):
         self.__init__(array, attrs)
@@ -543,6 +548,13 @@ class ArrayWrapper(object):
             elif val:
                 out.append(values + (val,))
         return [fields] + out
+
+    def to_dict(self):
+        """
+        Convert the public attributes into a dictionary
+        """
+        return {k: v for k, v in vars(self).items()
+                if k != 'array' and not k.startswith('_')}
 
 
 def decode_array(values):
