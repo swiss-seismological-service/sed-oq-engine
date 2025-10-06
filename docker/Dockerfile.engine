@@ -14,29 +14,37 @@
 # along with OpenQuake. If not, see <http://www.gnu.org/licenses/>.
 FROM python:3.11.6-slim AS compile-image
 LABEL maintainer="GEM Foundation <devops@openquake.org>" \
-       vendor="GEM Foundation"
+    vendor="GEM Foundation"
 RUN useradd -m -u 1000 -s /bin/bash openquake
-RUN apt-get update &&  apt-get install -y --no-install-recommends build-essential gcc git libcap-dev
-ARG oq_branch
+RUN apt-get update &&  apt-get install -y --no-install-recommends build-essential gcc libcap-dev
 # Create venv
 ENV VIRTUAL_ENV=/opt/openquake
 RUN python3 -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
-#clone repository and install engine
-RUN git clone https://github.com/gem/oq-engine.git --depth=1 --branch $oq_branch && cd oq-engine && \
-    pip --disable-pip-version-check install . -r requirements-py311-linux64.txt --no-warn-script-location
+# Copy local code and install engine
+COPY --chown=openquake:openquake . /tmp/oq-engine
+RUN cd /tmp/oq-engine && \
+    pip --disable-pip-version-check install . -r requirements-py311-linux64.txt --no-warn-script-location && \
+    rm -rf /tmp/oq-engine && \
+    DEST_DIR=/opt/openquake/lib/python3.11/site-packages/openquake/server/templates/registration && \
+    cp ${DEST_DIR}/password_reset_email_content.txt.default.tmpl ${DEST_DIR}/password_reset_email_content.txt && \
+    cp ${DEST_DIR}/password_reset_email_subject.txt.default.tmpl ${DEST_DIR}/password_reset_email_subject.txt && \
+    cp ${DEST_DIR}/normal_user_creation_email_content.txt.default.tmpl ${DEST_DIR}/normal_user_creation_email_content.txt && \
+    cp ${DEST_DIR}/normal_user_creation_email_subject.txt.default.tmpl ${DEST_DIR}/normal_user_creation_email_subject.txt
 #
 FROM python:3.11.6-slim AS build-image
 COPY --from=compile-image /opt/openquake/ /opt/openquake/
-ENV LANG en_US.UTF-8
+ENV LANG=en_US.UTF-8
 ENV LOCKDOWN=False
 RUN useradd -m -u 1000 -s /bin/bash openquake
 USER openquake
-ENV HOME /home/openquake
+ENV HOME=/home/openquake
 WORKDIR ${HOME}
 ENV PATH="/opt/openquake/bin:$PATH"
 #
+ADD docker/scripts/oq-start.sh ${HOME}
 RUN mkdir oqdata
-EXPOSE 8800:8800
+EXPOSE 8800
 STOPSIGNAL SIGINT
 ENTRYPOINT ["/bin/bash", "-c"]
+CMD ["./oq-start.sh"]  
